@@ -1,0 +1,2 @@
+# OmniC360 design
+A compact helpdesk console for agents. Midnight navy navigation, off-white work area, white panels, cobalt actions. System sans, monospaced ticket IDs, thin dividers and subtle priority chips. A searchable queue opens into a detail panel with a separate activity history. Environment always visible, with production marked distinctly. Responsive single-column view at mobile widths.
