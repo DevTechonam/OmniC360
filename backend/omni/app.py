@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from .models import AddNote, Env, Intake, Login, Priority, Receipt, Status, UpdateTicket
 from .store import connect, database_path, digest, initialize, now, passwords
 
+EnvironmentHeader = Annotated[Env, Header(alias='X-Environment', description='Ticket environment: dev, qa, or prod')]
+
 COOKIE = 'omni_session'
 SESSION_SECONDS = 8 * 60 * 60
 BEARER = HTTPBearer(auto_error=False)
@@ -138,11 +140,11 @@ def make_app(path=None, origin=None, secure_cookie=None, static_dir=None):
                 WHERE m.operator_id=? ORDER BY c.name,c.id''', (actor['id'],)).fetchall()
         return {'operator': dict(actor), 'customers': [dict(row) for row in customers]}
 
-    @app.post('/api/v1/{env}/tickets', status_code=201, response_model=Receipt,
+    @app.post('/api/v1/tickets', status_code=201, response_model=Receipt,
               responses={200: {'model': Receipt, 'description': 'Idempotent replay'},
                          401: {'description': 'Missing, revoked or wrong-environment key'},
                          409: {'description': 'Retry key already used with a different payload'}})
-    def create(env: Env, payload: Intake, response: Response,
+    def create(env: EnvironmentHeader, payload: Intake, response: Response,
                token: Annotated[str, Depends(bearer_token)],
                retry: Annotated[str, Header(alias='Idempotency-Key', min_length=1, max_length=128,
                                             pattern=r'^[A-Za-z0-9][A-Za-z0-9_.:\-]*$')]):
@@ -176,8 +178,8 @@ def make_app(path=None, origin=None, secure_cookie=None, static_dir=None):
             return [dict(row) for row in db.execute('''SELECT o.id,o.name FROM operators o JOIN memberships m
                 ON m.operator_id=o.id WHERE m.customer_id=? ORDER BY o.name,o.id''', (customer,))]
 
-    @app.get('/api/customers/{customer}/{env}/tickets')
-    def queue(customer: str, env: Env, _actor: Annotated[dict, Depends(member)],
+    @app.get('/api/customers/{customer}/tickets')
+    def queue(customer: str, env: EnvironmentHeader, _actor: Annotated[dict, Depends(member)],
               q: Annotated[str, Query(max_length=160)] = '', status: Status | None = None,
               priority: Priority | None = None, limit: Annotated[int, Query(ge=1, le=100)] = 25,
               offset: Annotated[int, Query(ge=0, le=1_000_000)] = 0):
@@ -202,8 +204,8 @@ def make_app(path=None, origin=None, secure_cookie=None, static_dir=None):
                   WHERE {where} ORDER BY t.updated_at DESC,t.id LIMIT ? OFFSET ?''', (*args, limit, offset)).fetchall()
         return {'items': [dict(row) for row in rows], 'total': total, 'counts': counts}
 
-    @app.get('/api/customers/{customer}/{env}/tickets/{ticket_id}')
-    def detail(customer: str, env: Env, ticket_id: str, _actor: Annotated[dict, Depends(member)]):
+    @app.get('/api/customers/{customer}/tickets/{ticket_id}')
+    def detail(customer: str, env: EnvironmentHeader, ticket_id: str, _actor: Annotated[dict, Depends(member)]):
         with connect(path) as db:
             db.execute('BEGIN')
             data = ticket(db, customer, env, ticket_id)
@@ -212,8 +214,8 @@ def make_app(path=None, origin=None, secure_cookie=None, static_dir=None):
             data['activity'] = [dict(row) for row in rows]
         return data
 
-    @app.patch('/api/customers/{customer}/{env}/tickets/{ticket_id}')
-    def update(customer: str, env: Env, ticket_id: str, payload: UpdateTicket, actor: Annotated[dict, Depends(member)], _origin: Annotated[None, Depends(same_origin)]):
+    @app.patch('/api/customers/{customer}/tickets/{ticket_id}')
+    def update(customer: str, env: EnvironmentHeader, ticket_id: str, payload: UpdateTicket, actor: Annotated[dict, Depends(member)], _origin: Annotated[None, Depends(same_origin)]):
         with connect(path) as db:
             db.execute('BEGIN IMMEDIATE')
             current = ticket(db, customer, env, ticket_id)
@@ -236,8 +238,8 @@ def make_app(path=None, origin=None, secure_cookie=None, static_dir=None):
                              f'Assigned to {name}.' if name else 'Removed assignment.', timestamp)
             return ticket(db, customer, env, ticket_id)
 
-    @app.post('/api/customers/{customer}/{env}/tickets/{ticket_id}/notes', status_code=201)
-    def note(customer: str, env: Env, ticket_id: str, payload: AddNote, actor: Annotated[dict, Depends(member)], _origin: Annotated[None, Depends(same_origin)]):
+    @app.post('/api/customers/{customer}/tickets/{ticket_id}/notes', status_code=201)
+    def note(customer: str, env: EnvironmentHeader, ticket_id: str, payload: AddNote, actor: Annotated[dict, Depends(member)], _origin: Annotated[None, Depends(same_origin)]):
         with connect(path) as db:
             db.execute('BEGIN IMMEDIATE')
             ticket(db, customer, env, ticket_id)

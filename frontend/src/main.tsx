@@ -56,7 +56,7 @@ function QueueView({customer, env, onExpired}: {customer: Customer; env: Env; on
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const root = `/customers/${encodeURIComponent(customer.id)}`;
-  const endpoint = `${root}/${env}/tickets`;
+  const endpoint = `${root}/tickets`;
   const refresh = useCallback(() => setVersion(v => v + 1), []);
   useEffect(() => {
     const timeout = window.setTimeout(() => {setSearch(q.trim()); setPage(0);}, 225);
@@ -68,7 +68,7 @@ function QueueView({customer, env, onExpired}: {customer: Customer; env: Env; on
     if (status) params.set('status', status);
     if (priority) params.set('priority', priority);
     setLoading(true); setError(''); setData(null);
-    api<Queue>(`${endpoint}?${params}`, {signal: abort.signal}).then(result => {
+    api<Queue>(`${endpoint}?${params}`, {signal: abort.signal, headers: {'X-Environment': env}}).then(result => {
       if (abort.signal.aborted) return;
       if (page && page * pageSize >= result.total) setPage(Math.max(0, Math.ceil(result.total / pageSize) - 1));
       else setData(result);
@@ -78,7 +78,7 @@ function QueueView({customer, env, onExpired}: {customer: Customer; env: Env; on
       else setError(errorText(error));
     }).finally(() => {if (!abort.signal.aborted) setLoading(false);});
     return () => abort.abort();
-  }, [endpoint, onExpired, page, priority, search, status, version]);
+  }, [endpoint, env, onExpired, page, priority, search, status, version]);
   const metrics = [['open', CircleDot], ['in_progress', Activity], ['resolved', CheckCircle2], ['closed', Inbox]] as const;
   return <>
     <div className="heading"><div><div className="eyebrow">OPERATOR CONSOLE</div><h1>Escalation queue</h1><p>Review and resolve issues sent from chat and voice integrations.</p></div><button className="secondary" onClick={refresh} disabled={loading}><RefreshCw size={15}/> Refresh</button></div>
@@ -86,11 +86,11 @@ function QueueView({customer, env, onExpired}: {customer: Customer; env: Env; on
     <section className="panel" aria-label="Escalation tickets" aria-busy={loading}><div className="panel-title"><h2>Tickets</h2><span className="context">{customer.name} / {labels[env]}</span></div><div className="filters"><label className="search"><Search size={17}/><input aria-label="Search tickets" placeholder="Search ticket ID, subject, or reference…" value={q} maxLength={160} onChange={e => setQ(e.target.value)}/></label><select value={status} aria-label="Filter by status" onChange={e => {setStatus(e.target.value as Status | '');setPage(0);}}><option value="">All statuses</option>{statuses.map(key => <option key={key} value={key}>{labels[key]}</option>)}</select><select value={priority} aria-label="Filter by priority" onChange={e => {setPriority(e.target.value as Priority | '');setPage(0);}}><option value="">All priorities</option>{priorities.map(key => <option key={key} value={key}>{labels[key]}</option>)}</select></div>
     {error ? <div className="panel-error"><ErrorBanner message={error}/></div> : loading ? <div className="empty" role="status">Loading tickets…</div> : data?.items.length ? <div className="table-scroll"><table><thead><tr><th>Ticket</th><th>Priority</th><th>Status</th><th>Source</th><th>Assignee</th><th>Updated</th><th aria-label="Open ticket"/></tr></thead><tbody>{data.items.map(ticket => <tr key={ticket.id} onClick={() => setDetail(ticket.id)}><td><button className="ticket-link" onClick={event => {event.stopPropagation();setDetail(ticket.id);}}>{ticket.subject}</button><small className="ticket-id">{ticket.id}</small></td><td><Pill value={ticket.priority}/></td><td><Pill value={ticket.status}/></td><td><Source value={ticket.source}/></td><td>{ticket.assignee_name ?? 'Unassigned'}</td><td className="no-wrap">{date(ticket.updated_at)}</td><td><ChevronRight size={16}/></td></tr>)}</tbody></table></div> : <div className="empty"><Inbox size={28}/><b>{q || status || priority ? 'No matching tickets' : 'No tickets yet'}</b><span>{q || status || priority ? 'Try another search or clear a filter.' : `Escalations sent to ${labels[env]} will appear here.`}</span></div>}
     <footer className="table-foot"><span>{data?.total ? `Showing ${page * pageSize + 1}–${page * pageSize + data.items.length} of ${data.total}` : data ? '0 tickets' : '—'}</span><div><button className="secondary icon" aria-label="Previous page" disabled={!page || loading} onClick={() => setPage(p => p - 1)}><ArrowLeft size={16}/></button><button className="secondary icon" aria-label="Next page" disabled={!data || (page + 1) * pageSize >= data.total || loading} onClick={() => setPage(p => p + 1)}><ArrowRight size={16}/></button></div></footer></section>
-    {detail && <TicketDetail key={detail} root={root} endpoint={`${endpoint}/${encodeURIComponent(detail)}`} onClose={() => setDetail('')} onUpdate={refresh} onExpired={onExpired}/>}
+    {detail && <TicketDetail key={detail} env={env} root={root} endpoint={`${endpoint}/${encodeURIComponent(detail)}`} onClose={() => setDetail('')} onUpdate={refresh} onExpired={onExpired}/>}
   </>;
 }
 
-function TicketDetail({root, endpoint, onClose, onUpdate, onExpired}: {root: string; endpoint: string; onClose: () => void; onUpdate: () => void; onExpired: () => void}) {
+function TicketDetail({env, root, endpoint, onClose, onUpdate, onExpired}: {env: Env; root: string; endpoint: string; onClose: () => void; onUpdate: () => void; onExpired: () => void}) {
   const [ticket, setTicket] = useState<Detail | null>(null);
   const [operators, setOperators] = useState<Operator[]>([]);
   const [error, setError] = useState('');
@@ -101,12 +101,12 @@ function TicketDetail({root, endpoint, onClose, onUpdate, onExpired}: {root: str
   useEffect(() => {if (dialog && !dialog.open) dialog.showModal();}, [dialog]);
   useEffect(() => {
     const abort = new AbortController();
-    Promise.all([api<Detail>(endpoint,{signal:abort.signal}), api<Operator[]>(`${root}/operators`,{signal:abort.signal})]).then(([detail,list]) => {if (!abort.signal.aborted) {setTicket(detail);setOperators(list);}}).catch(error => {if (!abort.signal.aborted) fail(error);});
+    Promise.all([api<Detail>(endpoint,{signal:abort.signal, headers: {'X-Environment': env}}), api<Operator[]>(`${root}/operators`,{signal:abort.signal})]).then(([detail,list]) => {if (!abort.signal.aborted) {setTicket(detail);setOperators(list);}}).catch(error => {if (!abort.signal.aborted) fail(error);});
     return () => abort.abort();
-  }, [endpoint, fail, root]);
+  }, [endpoint, env, fail, root]);
   async function mutate(path: string, method: string, body: object, clearNote = false) {
     setBusy(true); setError('');
-    try {await api(`${endpoint}${path}`, {method, body: JSON.stringify(body)}); if (clearNote) setNote(''); onUpdate();setTicket(await api<Detail>(endpoint));}
+    try {await api(`${endpoint}${path}`, {method, headers: {'X-Environment': env}, body: JSON.stringify(body)}); if (clearNote) setNote(''); onUpdate();setTicket(await api<Detail>(endpoint, {headers: {'X-Environment': env}}));}
     catch (error) {fail(error);} finally {setBusy(false);}
   }
   return <dialog ref={setDialog} className="drawer" aria-labelledby="details-title" onCancel={onClose} onClick={event => {if (event.currentTarget === event.target) {const bounds = event.currentTarget.getBoundingClientRect(); if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) onClose();}}}>

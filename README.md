@@ -34,16 +34,17 @@ For hot reload, start `npm run dev --prefix frontend`, set `OMNI_ORIGIN=http://l
 Send a request from your chatbot or IVR server, **not** from browser code. Set `OMNI_INTEGRATION_KEY` in that server's secret store. For a one-off local test, use the Dev key generated above, then run:
 
 ```sh
-curl -i http://127.0.0.1:8000/api/v1/dev/tickets \
+curl -i http://127.0.0.1:8000/api/v1/tickets \
   -H "Authorization: Bearer ${OMNI_INTEGRATION_KEY:?set your Dev key}" \
   -H 'Content-Type: application/json' \
+  -H 'X-Environment: dev' \
   -H 'Idempotency-Key: ivr-session-184:escalation-1' \
   --data '{"source":"ivr","subject":"Caller could not confirm order","description":"Caller asked for a live agent after two attempts.","priority":"high","external_reference":"ivr-session-184"}'
 ```
 
 | Field | Contract |
 |---|---|
-| URL environment | `dev`, `qa`, or `prod` |
+| `X-Environment` header | Required on intake, ticket queue, detail, updates, and notes: `dev`, `qa`, or `prod`. No default. |
 | `source` | Required: `chatbot` or `ivr` |
 | `subject` | Required, 1–160 characters |
 | `description` | Required, 1–8,000 characters |

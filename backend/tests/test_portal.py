@@ -9,7 +9,8 @@ from omni.store import connect, digest, passwords
 ORIGIN = 'http://localhost:5173'
 PASSWORD = 'example-only-password-for-tests'
 CUSTOMER = '/api/customers/acme'
-QUEUE = f'{CUSTOMER}/dev/tickets'
+QUEUE = f'{CUSTOMER}/tickets'
+DEV = {'X-Environment': 'dev'}
 PAYLOAD = {'source': 'chatbot', 'subject': 'Transfer never completes', 'description': 'Chat transfer timed out.',
            'priority': 'high', 'contact': 'person@example.test', 'external_reference': 'call-456'}
 
@@ -34,8 +35,8 @@ def portal(tmp_path):
 
 
 def intake(client, customer='acme', env='dev', event='event-456', payload=None, key=None):
-    return client.post(f'/api/v1/{env}/tickets', json=PAYLOAD if payload is None else payload,
-                       headers={'Authorization': f'Bearer {key or customer + "-" + env}', 'Idempotency-Key': event})
+    return client.post('/api/v1/tickets', json=PAYLOAD if payload is None else payload,
+                       headers={'Authorization': f'Bearer {key or customer + "-" + env}', 'Idempotency-Key': event, 'X-Environment': env})
 
 
 def login(client, email='agent@example.test', password=PASSWORD, origin=ORIGIN):
@@ -48,9 +49,9 @@ def test_unauthenticated_requests(portal):
         ('GET', '/api/session', None), ('DELETE', '/api/session', None), ('GET', f'{CUSTOMER}/operators', None),
         ('GET', QUEUE, None), ('GET', f'{QUEUE}/ESC-TEST', None),
         ('PATCH', f'{QUEUE}/ESC-TEST', {'status': 'closed'}), ('POST', f'{QUEUE}/ESC-TEST/notes', {'body': 'note'}),
-        ('POST', '/api/v1/dev/tickets', PAYLOAD),
+        ('POST', '/api/v1/tickets', PAYLOAD),
     ]:
-        assert client.request(method, url, **({'json': body} if body else {})).status_code == 401
+        assert client.request(method, url, headers=DEV, **({'json': body} if body else {})).status_code == 401
     assert intake(client, key='invalid').status_code == 401
     assert intake(client, key='revoked').status_code == 401
     assert intake(client, env='prod', key='acme-dev').status_code == 401
@@ -70,11 +71,11 @@ def test_intake_retry_and_scope(portal):
     assert intake(client, env='prod').status_code == 201
     assert intake(client, customer='other').status_code == 201
     assert login(client).status_code == 200
-    assert client.get('/api/customers/other/dev/tickets').status_code == 404
+    assert client.get('/api/customers/other/tickets', headers=DEV).status_code == 404
     assert client.get('/api/customers/other/operators').status_code == 404
-    assert client.get(f'{CUSTOMER}/prod/tickets/{first.json()["id"]}').status_code == 404
+    assert client.get(f'{QUEUE}/{first.json()["id"]}', headers={'X-Environment': 'prod'}).status_code == 404
     for env in ('dev', 'qa', 'prod'):
-        assert client.get(f'{CUSTOMER}/{env}/tickets').json()['total'] == 1
+        assert client.get(QUEUE, headers={'X-Environment': env}).json()['total'] == 1
 
 
 def test_concurrent_retry_creates_once(portal):
@@ -89,30 +90,30 @@ def test_lifecycle_and_audit(portal):
     client, _ = portal
     key = intake(client).json()['id']
     url = f'{QUEUE}/{key}'
-    headers = {'Origin': ORIGIN}
+    headers = {**DEV, 'Origin': ORIGIN}
     assert login(client, password='bad').status_code == 401
     assert login(client, origin='https://wrong.example.test').status_code == 403
     response = login(client)
     assert response.status_code == 200 and 'HttpOnly' in response.headers['Set-Cookie']
     assert client.get('/api/session').json()['customers'] == [{'id': 'acme', 'name': 'Acme'}]
-    assert client.get(f'{QUEUE}?q=call-456&priority=high&status=open').json()['total'] == 1
-    assert client.get(f'{QUEUE}?q=missing').json()['total'] == 0
-    assert client.get(f'{QUEUE}?limit=1&offset=1').json()['items'] == []
-    assert client.patch(url, json={'status': 'resolved'}).status_code == 403
+    assert client.get(f'{QUEUE}?q=call-456&priority=high&status=open', headers=DEV).json()['total'] == 1
+    assert client.get(f'{QUEUE}?q=missing', headers=DEV).json()['total'] == 0
+    assert client.get(f'{QUEUE}?limit=1&offset=1', headers=DEV).json()['items'] == []
+    assert client.patch(url, headers=DEV, json={'status': 'resolved'}).status_code == 403
     assert client.patch(url, headers=headers, json={'status': 'resolved', 'assignee_id': 2}).status_code == 422
-    assert client.get(url).json()['status'] == 'open'  # invalid assignment rolled back the whole change
-    assert client.get(url).json()['contact'] == PAYLOAD['contact']
+    assert client.get(url, headers=DEV).json()['status'] == 'open'  # invalid assignment rolled back the whole change
+    assert client.get(url, headers=DEV).json()['contact'] == PAYLOAD['contact']
     assert client.patch(url, headers=headers, json={'status': 'in_progress', 'assignee_id': 1}).status_code == 200
     assert client.post(f'{url}/notes', headers=headers, json={'body': '  '}).status_code == 422
     assert client.post(f'{url}/notes', headers=headers, json={'body': 'Spoke with support.'}).status_code == 201
     assert client.patch(url, headers=headers, json={'status': 'resolved', 'assignee_id': None}).status_code == 200
-    detail = client.get(url).json()
+    detail = client.get(url, headers=DEV).json()
     assert detail['status'] == 'resolved' and detail['assignee_id'] is None
     assert [event['kind'] for event in detail['activity']] == ['assignment','status','note','assignment','status','created']
     assert detail['activity'][2]['body'] == 'Spoke with support.'
-    assert client.get(QUEUE).json()['counts'] == {'resolved': 1}
+    assert client.get(QUEUE, headers=DEV).json()['counts'] == {'resolved': 1}
     assert client.delete('/api/session', headers=headers).status_code == 204
-    assert client.get(url).status_code == 401
+    assert client.get(url, headers=DEV).status_code == 401
 
 
 def test_expired_sessions(portal):
@@ -120,13 +121,24 @@ def test_expired_sessions(portal):
     assert login(client).status_code == 200
     with connect(path) as db:
         db.execute('UPDATE sessions SET expires=1')
-    assert client.get(QUEUE).status_code == 401
+    assert client.get(QUEUE, headers=DEV).status_code == 401
 
 
 def test_intake_credentials_cannot_read_or_mutate_operator_routes(portal):
     client, _ = portal
     key = intake(client).json()['id']
-    headers = {'Authorization': 'Bearer acme-dev', 'Origin': ORIGIN}
+    headers = {**DEV, 'Authorization': 'Bearer acme-dev', 'Origin': ORIGIN}
     assert client.get(f'{QUEUE}/{key}', headers=headers).status_code == 401
     assert client.patch(f'{QUEUE}/{key}', headers=headers, json={'status': 'closed'}).status_code == 401
     assert client.post(f'{QUEUE}/{key}/notes', headers=headers, json={'body': 'Insert me'}).status_code == 401
+
+
+def test_environment_header_required_and_validated(portal):
+    client, _ = portal
+    intake_headers = {'Authorization': 'Bearer acme-dev', 'Idempotency-Key': 'header-test'}
+    assert client.post('/api/v1/tickets', headers=intake_headers, json=PAYLOAD).status_code == 422
+    assert client.post('/api/v1/tickets', headers={**intake_headers, 'X-Environment': 'staging'}, json=PAYLOAD).status_code == 422
+    assert client.post('/api/v1/dev/tickets', headers={**intake_headers, **DEV}, json=PAYLOAD).status_code == 404
+    assert login(client).status_code == 200
+    assert client.get(QUEUE).status_code == 422
+    assert client.get(QUEUE, headers={'X-Environment': 'staging'}).status_code == 422
